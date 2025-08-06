@@ -1,0 +1,665 @@
+const axios = require('axios');
+
+class AIService {
+  constructor() {
+    // 支援多種AI服務
+    this.openaiApiKey = process.env.OPENAI_API_KEY;
+    this.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+    this.geminiApiKey = process.env.GEMINI_API_KEY;
+    this.visionApiKey = process.env.GOOGLE_VISION_API_KEY;
+    
+    // API端點
+    this.openaiUrl = 'https://api.openai.com/v1/chat/completions';
+    this.anthropicUrl = 'https://api.anthropic.com/v1/messages';
+    this.geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${this.geminiApiKey}`;
+    this.visionApiUrl = 'https://vision.googleapis.com/v1/images:annotate';
+    
+    // 預設使用的AI服務 (可在環境變數中配置)
+    this.preferredAI = process.env.PREFERRED_AI_SERVICE || 'gemini';
+  }
+
+  // 衣物識別主函數
+  async analyzeClothing(imageBase64) {
+    try {
+      let analysis;
+      
+      // 根據配置選擇AI服務
+      switch (this.preferredAI) {
+        case 'openai':
+          analysis = await this.analyzeWithOpenAI(imageBase64);
+          break;
+        case 'anthropic':
+          analysis = await this.analyzeWithAnthropic(imageBase64);
+          break;
+        case 'gemini':
+          analysis = await this.analyzeWithGemini(imageBase64);
+          break;
+        case 'google-vision':
+          const visionResult = await this.detectClothingWithVision(imageBase64);
+          analysis = this.processVisionResult(visionResult);
+          break;
+        default:
+          // 自動降級：優先順序 OpenAI > Gemini > Anthropic > Google Vision
+          analysis = await this.analyzeWithFallback(imageBase64);
+      }
+      
+      return {
+        category: analysis.category,
+        subCategory: analysis.subCategory,
+        colors: analysis.colors,
+        style: analysis.style,
+        season: analysis.season,
+        confidence: analysis.confidence,
+        detectedFeatures: analysis.features,
+        suggestedTags: analysis.tags,
+        aiService: analysis.aiService || this.preferredAI
+      };
+    } catch (error) {
+      console.error('AI分析錯誤:', error);
+      return this.getFallbackAnalysis();
+    }
+  }
+
+  // OpenAI GPT-4 Vision 分析
+  async analyzeWithOpenAI(imageBase64) {
+    const prompt = `請分析這張衣物圖片，並以JSON格式回傳以下資訊：
+{
+  "category": "衣物主類別(上衣/下裝/外套/鞋子/配件/內衣/運動服/正裝)",
+  "subCategory": "具體類型(如T恤、襯衫、牛仔褲等)",
+  "colors": ["主要顏色1", "主要顏色2", "主要顏色3"],
+  "style": "風格(休閒/正式/運動/時尚/復古/簡約/街頭)",
+  "season": ["適合季節"],
+  "features": ["特徵描述"],
+  "tags": ["標籤"],
+  "confidence": 0.95,
+  "condition": "衣物狀況(全新/良好/普通/磨損)",
+  "occasion": "適合場合"
+}
+
+請仔細觀察衣物的材質、顏色、款式、狀況等細節。`;
+
+    const response = await axios.post(this.openaiUrl, {
+      model: "gpt-4-vision-preview",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:image/jpeg;base64,${imageBase64}`,
+                detail: "high"
+              }
+            }
+          ]
+        }
+      ],
+      max_tokens: 1000,
+      temperature: 0.1
+    }, {
+      headers: {
+        'Authorization': `Bearer ${this.openaiApiKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const content = response.data.choices[0].message.content;
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    
+    if (jsonMatch) {
+      const analysis = JSON.parse(jsonMatch[0]);
+      return {
+        ...analysis,
+        aiService: 'openai'
+      };
+    }
+    
+    throw new Error('無法解析OpenAI回應');
+  }
+
+  // Anthropic Claude Vision 分析
+  async analyzeWithAnthropic(imageBase64) {
+    const prompt = `請分析這張衣物圖片，提供詳細的衣物資訊。請以JSON格式回傳：
+{
+  "category": "主類別",
+  "subCategory": "具體類型", 
+  "colors": ["顏色陣列"],
+  "style": "風格",
+  "season": ["季節陣列"],
+  "features": ["特徵陣列"],
+  "tags": ["標籤陣列"],
+  "confidence": 信心度,
+  "condition": "狀況",
+  "occasion": "場合"
+}`;
+
+    const response = await axios.post(this.anthropicUrl, {
+      model: "claude-3-sonnet-20240229",
+      max_tokens: 1000,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/jpeg",
+                data: imageBase64
+              }
+            },
+            {
+              type: "text",
+              text: prompt
+            }
+          ]
+        }
+      ]
+    }, {
+      headers: {
+        'x-api-key': this.anthropicApiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const content = response.data.content[0].text;
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    
+    if (jsonMatch) {
+      const analysis = JSON.parse(jsonMatch[0]);
+      return {
+        ...analysis,
+        aiService: 'anthropic'
+      };
+    }
+    
+    throw new Error('無法解析Anthropic回應');
+  }
+
+  // Google Gemini Vision 分析
+  async analyzeWithGemini(imageBase64) {
+    const prompt = `請仔細分析這張衣物圖片，作為專業的時尚顧問，為36歲ADHD男性用戶提供詳細的衣物資訊。請以JSON格式回傳：
+
+{
+  "category": "衣物主類別(上衣/下裝/外套/鞋子/配件/內衣/運動服/正裝)",
+  "subCategory": "具體類型(如T恤、襯衫、牛仔褲、運動鞋等)",
+  "colors": ["主要顏色1", "主要顏色2", "主要顏色3"],
+  "style": "風格(休閒/正式/運動/時尚/復古/簡約/街頭)",
+  "season": ["適合季節"],
+  "features": ["材質特徵", "設計特點", "版型描述"],
+  "tags": ["實用標籤"],
+  "confidence": 0.95,
+  "condition": "衣物狀況(全新/良好/普通/磨損)",
+  "occasion": "適合場合(日常/工作/運動/正式)",
+  "materialGuess": "材質推測",
+  "careInstructions": "保養建議"
+}
+
+請特別注意：
+1. 準確識別衣物類別和顏色
+2. 評估衣物的實用性和搭配性
+3. 考慮ADHD用戶的簡化需求
+4. 提供實用的穿搭建議`;
+
+    const response = await axios.post(this.geminiUrl, {
+      contents: [{
+        parts: [
+          { text: prompt },
+          {
+            inline_data: {
+              mime_type: "image/jpeg",
+              data: imageBase64
+            }
+          }
+        ]
+      }]
+    }, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const content = response.data.candidates[0].content.parts[0].text;
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    
+    if (jsonMatch) {
+      const analysis = JSON.parse(jsonMatch[0]);
+      return {
+        ...analysis,
+        aiService: 'gemini'
+      };
+    }
+    
+    throw new Error('無法解析Gemini回應');
+  }
+
+  // 自動降級分析
+  async analyzeWithFallback(imageBase64) {
+    const services = ['gemini', 'openai', 'anthropic', 'google-vision'];
+    
+    for (const service of services) {
+      try {
+        console.log(`嘗試使用 ${service} 進行分析...`);
+        
+        switch (service) {
+          case 'openai':
+            if (this.openaiApiKey) return await this.analyzeWithOpenAI(imageBase64);
+            break;
+          case 'gemini':
+            if (this.geminiApiKey) return await this.analyzeWithGemini(imageBase64);
+            break;
+          case 'anthropic':
+            if (this.anthropicApiKey) return await this.analyzeWithAnthropic(imageBase64);
+            break;
+          case 'google-vision':
+            if (this.visionApiKey) {
+              const visionResult = await this.detectClothingWithVision(imageBase64);
+              return this.processVisionResult(visionResult);
+            }
+            break;
+        }
+      } catch (error) {
+        console.warn(`${service} 分析失敗:`, error.message);
+        continue;
+      }
+    }
+    
+    throw new Error('所有AI服務都無法使用');
+  }
+
+  // Google Vision API 衣物檢測 (保留作為備用)
+  async detectClothingWithVision(imageBase64) {
+    const requestBody = {
+      requests: [{
+        image: {
+          content: imageBase64
+        },
+        features: [
+          { type: 'LABEL_DETECTION', maxResults: 20 },
+          { type: 'IMAGE_PROPERTIES', maxResults: 10 },
+          { type: 'OBJECT_LOCALIZATION', maxResults: 10 }
+        ]
+      }]
+    };
+
+    const response = await axios.post(
+      `${this.visionApiUrl}?key=${this.visionApiKey}`,
+      requestBody
+    );
+
+    return response.data.responses[0];
+  }
+
+  // 處理Vision API結果
+  processVisionResult(visionResult) {
+    const labels = visionResult.labelAnnotations || [];
+    const objects = visionResult.localizedObjectAnnotations || [];
+    const colors = this.extractColors(visionResult.imagePropertiesAnnotation);
+
+    // 衣物類別映射
+    const categoryMapping = {
+      'shirt': '上衣',
+      'blouse': '上衣', 
+      't-shirt': '上衣',
+      'sweater': '上衣',
+      'pants': '下裝',
+      'jeans': '下裝',
+      'skirt': '下裝',
+      'dress': '上衣',
+      'jacket': '外套',
+      'coat': '外套',
+      'shoes': '鞋子',
+      'sneakers': '鞋子',
+      'boots': '鞋子'
+    };
+
+    // 風格識別
+    const styleMapping = {
+      'casual': '休閒',
+      'formal': '正式',
+      'business': '正式',
+      'sport': '運動',
+      'athletic': '運動',
+      'fashion': '時尚',
+      'vintage': '復古'
+    };
+
+    let category = '上衣'; // 預設類別
+    let style = '休閒'; // 預設風格
+    let confidence = 0.5;
+
+    // 分析標籤找出最可能的類別
+    for (const label of labels) {
+      const labelName = label.description.toLowerCase();
+      for (const [key, value] of Object.entries(categoryMapping)) {
+        if (labelName.includes(key)) {
+          category = value;
+          confidence = Math.max(confidence, label.score);
+          break;
+        }
+      }
+    }
+
+    return {
+      category,
+      subCategory: this.getSubCategory(category, labels),
+      colors: colors.slice(0, 3), // 取前3個主要顏色
+      style,
+      season: this.inferSeason(labels, category),
+      confidence,
+      features: labels.slice(0, 5).map(l => l.description),
+      tags: this.generateTags(labels, category)
+    };
+  }
+
+  // 提取顏色信息
+  extractColors(imageProperties) {
+    if (!imageProperties || !imageProperties.dominantColors) {
+      return ['未知'];
+    }
+
+    return imageProperties.dominantColors.colors
+      .slice(0, 3)
+      .map(color => this.rgbToColorName(color.color));
+  }
+
+  // RGB轉顏色名稱
+  rgbToColorName(rgb) {
+    const r = rgb.red || 0;
+    const g = rgb.green || 0;
+    const b = rgb.blue || 0;
+
+    // 簡化的顏色識別
+    if (r > 200 && g > 200 && b > 200) return '白色';
+    if (r < 50 && g < 50 && b < 50) return '黑色';
+    if (r > g && r > b) return '紅色';
+    if (g > r && g > b) return '綠色';
+    if (b > r && b > g) return '藍色';
+    if (r > 150 && g > 150 && b < 100) return '黃色';
+    if (r > 150 && g < 100 && b > 150) return '紫色';
+    if (r > 100 && g > 100 && b > 100) return '灰色';
+    
+    return '其他';
+  }
+
+  // 獲取子類別
+  getSubCategory(category, labels) {
+    const subCategoryMap = {
+      '上衣': ['T恤', '襯衫', '毛衣', '背心', '連身裙'],
+      '下裝': ['牛仔褲', '休閒褲', '短褲', '裙子', '運動褲'],
+      '外套': ['夾克', '大衣', '風衣', '羽絨服', '西裝外套'],
+      '鞋子': ['運動鞋', '皮鞋', '靴子', '涼鞋', '高跟鞋']
+    };
+
+    const possibleSubs = subCategoryMap[category] || ['一般'];
+    return possibleSubs[0]; // 簡化版本，返回第一個
+  }
+
+  // 推斷季節
+  inferSeason(labels, category) {
+    const seasonKeywords = {
+      '夏': ['summer', 'short', 'tank', 'sandal', 'light'],
+      '冬': ['winter', 'coat', 'sweater', 'boot', 'warm'],
+      '春': ['spring', 'light', 'jacket'],
+      '秋': ['autumn', 'fall', 'jacket']
+    };
+
+    for (const label of labels) {
+      const desc = label.description.toLowerCase();
+      for (const [season, keywords] of Object.entries(seasonKeywords)) {
+        if (keywords.some(keyword => desc.includes(keyword))) {
+          return [season];
+        }
+      }
+    }
+
+    return ['春', '秋']; // 預設適合春秋
+  }
+
+  // 生成標籤
+  generateTags(labels, category) {
+    return labels
+      .slice(0, 5)
+      .map(label => label.description)
+      .filter(tag => tag.length < 10); // 過濾太長的標籤
+  }
+
+  // 備用分析結果
+  getFallbackAnalysis() {
+    return {
+      category: '上衣',
+      subCategory: '一般',
+      colors: ['未知'],
+      style: '休閒',
+      season: ['春', '秋'],
+      confidence: 0.3,
+      detectedFeatures: ['衣物'],
+      suggestedTags: ['需要重新分析']
+    };
+  }
+
+  // AI驅動的穿搭推薦
+  async generateOutfitRecommendations(userClothes, preferences = {}) {
+    try {
+      // 使用AI大模型生成更智能的穿搭建議
+      if (this.openaiApiKey || this.anthropicApiKey || this.geminiApiKey) {
+        return await this.generateAIOutfitRecommendations(userClothes, preferences);
+      }
+      
+      // 降級到基本算法
+      return await this.generateBasicOutfitRecommendations(userClothes, preferences);
+    } catch (error) {
+      console.error('穿搭推薦錯誤:', error);
+      return await this.generateBasicOutfitRecommendations(userClothes, preferences);
+    }
+  }
+
+  // AI驅動的穿搭推薦
+  async generateAIOutfitRecommendations(userClothes, preferences) {
+    const clothesData = userClothes.map(item => ({
+      id: item._id,
+      category: item.category,
+      subCategory: item.subCategory,
+      colors: item.colors,
+      style: item.style,
+      season: item.season,
+      wearCount: item.wearCount,
+      lastWorn: item.lastWorn
+    }));
+
+    const prompt = `作為專業的時尚造型師，請為一位36歲ADHD男性推薦穿搭組合。
+
+用戶衣物清單：
+${JSON.stringify(clothesData, null, 2)}
+
+用戶偏好：
+${JSON.stringify(preferences, null, 2)}
+
+請提供5-8個穿搭建議，每個建議包含：
+1. 選擇的衣物ID組合
+2. 搭配理由
+3. 適合場合
+4. 風格描述
+5. 顏色和諧度評分(1-10)
+
+請以JSON格式回傳：
+{
+  "recommendations": [
+    {
+      "items": ["衣物ID陣列"],
+      "reason": "搭配理由",
+      "occasion": "適合場合",
+      "style": "風格描述",
+      "colorHarmony": 8,
+      "seasonSuitability": ["適合季節"],
+      "tips": "穿搭小貼士"
+    }
+  ]
+}
+
+特別考慮ADHD用戶需求：
+- 簡單易搭配的組合
+- 減少決策疲勞
+- 實用性優先
+- 顏色搭配和諧
+- 風格統一一致`;
+
+    let response;
+    
+    // 優先使用Gemini
+    if (this.geminiApiKey) {
+      try {
+        response = await axios.post(this.geminiUrl.replace('gemini-pro-vision', 'gemini-pro'), {
+          contents: [{
+            parts: [{ text: prompt }]
+          }]
+        }, {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        const content = response.data.candidates[0].content.parts[0].text;
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        
+        if (jsonMatch) {
+          const result = JSON.parse(jsonMatch[0]);
+          return result.recommendations || [];
+        }
+      } catch (error) {
+        console.warn('Gemini穿搭推薦失敗，嘗試其他服務:', error.message);
+      }
+    }
+    
+    // 降級到OpenAI
+    if (this.openaiApiKey) {
+      try {
+        response = await axios.post(this.openaiUrl, {
+          model: "gpt-4",
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 2000,
+          temperature: 0.7
+        }, {
+          headers: {
+            'Authorization': `Bearer ${this.openaiApiKey}`,
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        const content = response.data.choices[0].message.content;
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        
+        if (jsonMatch) {
+          const result = JSON.parse(jsonMatch[0]);
+          return result.recommendations || [];
+        }
+      } catch (error) {
+        console.warn('OpenAI穿搭推薦失敗:', error.message);
+      }
+    }
+    
+    // 最終降級到基本算法
+    return await this.generateBasicOutfitRecommendations(userClothes, preferences);
+  }
+
+  // 基本穿搭推薦算法 (保留作為備用)
+  async generateBasicOutfitRecommendations(userClothes, preferences = {}) {
+    const outfits = [];
+    
+    // 基本搭配規則
+    const matchingRules = {
+      '上衣': ['下裝', '鞋子'],
+      '外套': ['上衣', '下裝', '鞋子'],
+      '連身裙': ['鞋子', '配件']
+    };
+
+    // 顏色搭配規則
+    const colorMatching = {
+      '黑色': ['白色', '灰色', '紅色', '藍色'],
+      '白色': ['黑色', '藍色', '紅色', '綠色'],
+      '藍色': ['白色', '黑色', '灰色'],
+      '紅色': ['黑色', '白色', '灰色']
+    };
+
+    // 生成搭配建議
+    const tops = userClothes.filter(item => item.category === '上衣');
+    const bottoms = userClothes.filter(item => item.category === '下裝');
+    const shoes = userClothes.filter(item => item.category === '鞋子');
+
+    for (const top of tops.slice(0, 5)) { // 限制數量避免過多組合
+      for (const bottom of bottoms.slice(0, 3)) {
+        for (const shoe of shoes.slice(0, 2)) {
+          const outfit = {
+            items: [top._id, bottom._id, shoe._id],
+            style: this.determineOutfitStyle([top, bottom, shoe]),
+            season: this.getCommonSeasons([top, bottom, shoe]),
+            colorHarmony: this.calculateColorHarmony([top, bottom, shoe]),
+            occasion: this.suggestOccasion([top, bottom, shoe])
+          };
+          
+          if (outfit.colorHarmony > 0.6) {
+            outfits.push(outfit);
+          }
+        }
+      }
+    }
+
+    return outfits.slice(0, 10); // 返回前10個推薦
+  }
+
+  // 計算顏色和諧度
+  calculateColorHarmony(items) {
+    // 簡化的顏色和諧度計算
+    const colors = items.flatMap(item => item.colors);
+    const uniqueColors = [...new Set(colors)];
+    
+    // 如果顏色種類太多，和諧度降低
+    if (uniqueColors.length > 4) return 0.3;
+    if (uniqueColors.length <= 2) return 0.9;
+    
+    return 0.7;
+  }
+
+  // 確定搭配風格
+  determineOutfitStyle(items) {
+    const styles = items.map(item => item.style);
+    const styleCount = {};
+    
+    styles.forEach(style => {
+      styleCount[style] = (styleCount[style] || 0) + 1;
+    });
+    
+    return Object.keys(styleCount).reduce((a, b) => 
+      styleCount[a] > styleCount[b] ? a : b
+    );
+  }
+
+  // 獲取共同季節
+  getCommonSeasons(items) {
+    const allSeasons = items.flatMap(item => item.season);
+    const seasonCount = {};
+    
+    allSeasons.forEach(season => {
+      seasonCount[season] = (seasonCount[season] || 0) + 1;
+    });
+    
+    return Object.keys(seasonCount).filter(season => 
+      seasonCount[season] >= 2
+    );
+  }
+
+  // 建議場合
+  suggestOccasion(items) {
+    const styles = items.map(item => item.style);
+    
+    if (styles.includes('正式')) return '工作/正式場合';
+    if (styles.includes('運動')) return '運動/健身';
+    if (styles.includes('時尚')) return '約會/聚會';
+    
+    return '日常休閒';
+  }
+}
+
+module.exports = new AIService();
