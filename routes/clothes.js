@@ -33,7 +33,7 @@ const upload = multer({
   }
 });
 
-// 上傳並分析衣物
+// 上傳並分析衣物 (單張)
 router.post('/upload', auth, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
@@ -75,6 +75,169 @@ router.post('/upload', auth, upload.single('image'), async (req, res) => {
   } catch (error) {
     console.error('上傳錯誤:', error);
     res.status(500).json({ message: '上傳失敗', error: error.message });
+  }
+});
+
+// 批量上傳並分析衣物 (新增)
+router.post('/batch-upload', auth, upload.array('images', 10), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ message: '請選擇要上傳的圖片' });
+    }
+
+    console.log(`開始批量處理 ${req.files.length} 張圖片...`);
+    const fs = require('fs');
+    const results = [];
+    const errors = [];
+
+    // 並發控制：避免AI服務過載
+    const CONCURRENT_LIMIT = 3; // 最多同時處理3張圖片
+    const processResults = [];
+    
+    for (let i = 0; i < req.files.length; i += CONCURRENT_LIMIT) {
+      const batch = req.files.slice(i, i + CONCURRENT_LIMIT);
+      console.log(`處理批次 ${Math.floor(i/CONCURRENT_LIMIT) + 1}/${Math.ceil(req.files.length/CONCURRENT_LIMIT)}: ${batch.length} 張圖片`);
+      
+      const batchPromises = batch.map(async (file, batchIndex) => {
+        const actualIndex = i + batchIndex;
+        
+        try {
+          console.log(`處理第 ${actualIndex + 1} 張圖片: ${file.filename}`);
+          
+          // 讀取圖片並轉換為base64 (非阻塞)
+          const imageBuffer = await fs.promises.readFile(file.path);
+          const imageBase64 = imageBuffer.toString('base64');
+
+          // 開始數據庫事務
+          const mongoose = require('mongoose');
+          const session = await mongoose.startSession();
+          session.startTransaction();
+
+          try {
+            // AI分析衣物
+            const aiAnalysis = await aiService.analyzeClothing(imageBase64);
+
+            // 創建衣物記錄
+            const clothing = new Clothing({
+              userId: req.user.id,
+              imageUrl: `/uploads/${file.filename}`,
+              category: aiAnalysis.category,
+              subCategory: aiAnalysis.subCategory,
+              colors: aiAnalysis.colors,
+              style: aiAnalysis.style,
+              season: aiAnalysis.season,
+              aiAnalysis: {
+                confidence: aiAnalysis.confidence,
+                detectedFeatures: aiAnalysis.detectedFeatures,
+                suggestedTags: aiAnalysis.suggestedTags
+              }
+            });
+
+            // 在事務中保存
+            await clothing.save({ session });
+            
+            // 提交事務
+            await session.commitTransaction();
+            session.endSession();
+
+            return {
+              index: actualIndex,
+              success: true,
+              clothing: clothing,
+              aiAnalysis: aiAnalysis,
+              filename: file.filename
+            };
+
+          } catch (transactionError) {
+            // 回滾事務
+            await session.abortTransaction();
+            session.endSession();
+            throw transactionError;
+          }
+
+        } catch (error) {
+          console.error(`處理第 ${actualIndex + 1} 張圖片失敗:`, error);
+          
+          // 清理失敗的上傳文件
+          try {
+            if (fs.existsSync(file.path)) {
+              await fs.promises.unlink(file.path);
+              console.log(`已清理失敗的文件: ${file.filename}`);
+            }
+          } catch (cleanupError) {
+            console.error(`清理文件失敗: ${cleanupError.message}`);
+          }
+          
+          return {
+            index: actualIndex,
+            success: false,
+            error: error.message,
+            filename: file.filename
+          };
+        }
+      });
+
+      // 等待當前批次完成
+      const batchResults = await Promise.all(batchPromises);
+      processResults.push(...batchResults);
+    }
+
+    // 分類結果
+    processResults.forEach(result => {
+      if (result.success) {
+        results.push(result);
+      } else {
+        errors.push(result);
+      }
+    });
+
+    const successCount = results.length;
+    const errorCount = errors.length;
+    const totalCount = req.files.length;
+
+    console.log(`批量處理完成: ${successCount}/${totalCount} 成功, ${errorCount} 失敗`);
+
+    // 返回結果
+    const response = {
+      message: `批量上傳完成：${successCount}/${totalCount} 張圖片處理成功`,
+      summary: {
+        total: totalCount,
+        success: successCount,
+        failed: errorCount,
+        successRate: Math.round((successCount / totalCount) * 100)
+      },
+      results: results.map(r => ({
+        clothing: r.clothing,
+        aiAnalysis: r.aiAnalysis,
+        filename: r.filename
+      })),
+      errors: errors.length > 0 ? errors.map(e => ({
+        filename: e.filename,
+        error: e.error
+      })) : undefined
+    };
+
+    // 根據成功率決定HTTP狀態碼
+    if (errorCount === 0) {
+      res.status(200).json(response);
+    } else if (successCount > 0) {
+      res.status(207).json(response); // 207 Multi-Status (部分成功)
+    } else {
+      res.status(500).json(response); // 全部失敗
+    }
+
+  } catch (error) {
+    console.error('批量上傳錯誤:', error);
+    res.status(500).json({ 
+      message: '批量上傳失敗', 
+      error: error.message,
+      summary: {
+        total: req.files ? req.files.length : 0,
+        success: 0,
+        failed: req.files ? req.files.length : 0,
+        successRate: 0
+      }
+    });
   }
 });
 
