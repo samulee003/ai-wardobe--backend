@@ -18,8 +18,9 @@ class AIService {
     this.preferredAI = process.env.PREFERRED_AI_SERVICE || 'gemini';
   }
 
-  // 衣物識別主函數
+  // 衣物識別主函數（加入耗時量測與強健錯誤處理）
   async analyzeClothing(imageBase64) {
+    const startAt = Date.now();
     try {
       let analysis;
       
@@ -43,6 +44,7 @@ class AIService {
           analysis = await this.analyzeWithFallback(imageBase64);
       }
       
+      const latencyMs = Date.now() - startAt;
       return {
         category: analysis.category,
         subCategory: analysis.subCategory,
@@ -52,11 +54,14 @@ class AIService {
         confidence: analysis.confidence,
         detectedFeatures: analysis.features,
         suggestedTags: analysis.tags,
-        aiService: analysis.aiService || this.preferredAI
+        aiService: analysis.aiService || this.preferredAI,
+        latencyMs
       };
     } catch (error) {
-      console.error('AI分析錯誤:', error);
-      return this.getFallbackAnalysis();
+      const latencyMs = Date.now() - startAt;
+      console.error('AI分析錯誤:', error.message || error);
+      const fallback = this.getFallbackAnalysis();
+      return { ...fallback, aiService: 'fallback', latencyMs };
     }
   }
 
@@ -78,7 +83,8 @@ class AIService {
 
 請仔細觀察衣物的材質、顏色、款式、狀況等細節。`;
 
-    const response = await axios.post(this.openaiUrl, {
+    // 帶超時與一次重試的請求
+    const makeRequest = async () => axios.post(this.openaiUrl, {
       model: "gpt-4-vision-preview",
       messages: [
         {
@@ -101,8 +107,23 @@ class AIService {
       headers: {
         'Authorization': `Bearer ${this.openaiApiKey}`,
         'Content-Type': 'application/json'
-      }
+      },
+      timeout: 15000
     });
+
+    let response;
+    try {
+      response = await makeRequest();
+    } catch (err) {
+      // 簡單重試一次（針對超時/5xx）
+      const status = err.response?.status;
+      if (err.code === 'ECONNABORTED' || (status && status >= 500)) {
+        await new Promise(r => setTimeout(r, 1000));
+        response = await makeRequest();
+      } else {
+        throw err;
+      }
+    }
 
     const content = response.data.choices[0].message.content;
     const jsonMatch = content.match(/\{[\s\S]*\}/);
