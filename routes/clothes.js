@@ -16,6 +16,90 @@ const storage = multer.diskStorage({
     cb(null, Date.now() + path.extname(file.originalname));
   }
 });
+// 自然語言搜尋（向量檢索 + 基本條件）
+router.post('/search', auth, async (req, res) => {
+  try {
+    const { q = '', limit = 10 } = req.body || {};
+    const userId = req.user.id;
+
+    const text = String(q || '').trim();
+    if (!text) {
+      // 空查詢：返回最近項
+      const items = await Clothing.find({ userId }).sort({ createdAt: -1 }).limit(limit);
+      return res.json({ items, tookMs: 0, provider: 'none' });
+    }
+
+    const vector = await aiService.embedText(text).catch(() => []);
+
+    // 若沒有向量（無金鑰等），回退到關鍵詞查詢
+    if (!vector || vector.length === 0) {
+      const regex = new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const items = await Clothing.find({
+        userId,
+        $or: [
+          { category: regex },
+          { subCategory: regex },
+          { colors: regex },
+          { style: regex },
+          { tags: regex }
+        ]
+      }).limit(limit);
+      return res.json({ items, fallback: true });
+    }
+
+    // 簡易餘弦相似度（在應用層）
+    const all = await Clothing.find({ userId }).lean();
+    const cosine = (a, b) => {
+      const len = Math.min(a.length, b.length);
+      let dot = 0, na = 0, nb = 0;
+      for (let i = 0; i < len; i++) { dot += a[i] * b[i]; na += a[i]*a[i]; nb += b[i]*b[i]; }
+      const denom = Math.sqrt(na) * Math.sqrt(nb) || 1;
+      return dot / denom;
+    };
+    const ranked = all
+      .filter(it => Array.isArray(it.embedding) && it.embedding.length > 0)
+      .map(it => ({ item: it, score: cosine(vector, it.embedding) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(r => ({ ...r.item, _score: r.score }));
+
+    res.json({ items: ranked, tookMs: 0, provider: 'openai' });
+  } catch (error) {
+    res.status(500).json({ message: '搜尋失敗', error: error.message });
+  }
+});
+
+// 查找相似衣物（用於上傳去重提示）
+router.get('/:id/similar', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const item = await Clothing.findOne({ _id: req.params.id, userId }).lean();
+    if (!item) return res.status(404).json({ message: '衣物不存在' });
+
+    if (!item.embedding || item.embedding.length === 0) {
+      return res.json({ items: [] });
+    }
+
+    const all = await Clothing.find({ userId, _id: { $ne: req.params.id } }).lean();
+    const cosine = (a, b) => {
+      const len = Math.min(a.length, b.length);
+      let dot = 0, na = 0, nb = 0;
+      for (let i = 0; i < len; i++) { dot += a[i] * b[i]; na += a[i]*a[i]; nb += b[i]*b[i]; }
+      const denom = Math.sqrt(na) * Math.sqrt(nb) || 1;
+      return dot / denom;
+    };
+    const ranked = all
+      .filter(it => Array.isArray(it.embedding) && it.embedding.length > 0)
+      .map(it => ({ item: it, score: cosine(item.embedding, it.embedding) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10)
+      .map(r => ({ ...r.item, _score: r.score }));
+
+    res.json({ items: ranked });
+  } catch (error) {
+    res.status(500).json({ message: '相似檢索失敗', error: error.message });
+  }
+});
 
 const upload = multer({ 
   storage: storage,
@@ -48,6 +132,16 @@ router.post('/upload', auth, upload.single('image'), async (req, res) => {
     // AI分析衣物
     const aiAnalysis = await aiService.analyzeClothing(imageBase64);
 
+    // 構建文字描述用於向量嵌入
+    const textForEmbedding = [
+      aiAnalysis.category,
+      aiAnalysis.subCategory,
+      (aiAnalysis.colors || []).join(' '),
+      aiAnalysis.style,
+      (aiAnalysis.suggestedTags || []).join(' ')
+    ].filter(Boolean).join(' ');
+    const embedding = await aiService.embedText(textForEmbedding).catch(() => []);
+
     // 創建衣物記錄
     const clothing = new Clothing({
       userId: req.user.id,
@@ -61,7 +155,8 @@ router.post('/upload', auth, upload.single('image'), async (req, res) => {
         confidence: aiAnalysis.confidence,
         detectedFeatures: aiAnalysis.detectedFeatures,
         suggestedTags: aiAnalysis.suggestedTags
-      }
+      },
+      embedding
     });
 
     await clothing.save();

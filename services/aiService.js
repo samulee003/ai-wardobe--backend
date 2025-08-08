@@ -23,6 +23,9 @@ class AIService {
       byService: {}, // { openai: { count, lastLatencyMs, errors }, ... }
       last: null // { aiService, latencyMs, at, isError }
     };
+
+    // 嵌入模型
+    this.openaiEmbeddingModel = process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
   }
 
   // 衣物識別主函數（加入耗時量測與強健錯誤處理）
@@ -175,6 +178,26 @@ class AIService {
         googleVision: !!this.visionApiKey
       }
     };
+  }
+
+  // 生成文字嵌入（用於自然語言搜尋與相似度）
+  async embedText(text) {
+    if (!text || text.trim().length === 0) return [];
+    if (!this.openaiApiKey) {
+      // 沒有 OpenAI 金鑰時，回傳空向量（用本地規則降級）
+      return [];
+    }
+    const response = await axios.post('https://api.openai.com/v1/embeddings', {
+      model: this.openaiEmbeddingModel,
+      input: text
+    }, {
+      headers: {
+        'Authorization': `Bearer ${this.openaiApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 10000
+    });
+    return response.data.data?.[0]?.embedding || [];
   }
 
   // Anthropic Claude Vision 分析

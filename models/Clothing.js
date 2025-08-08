@@ -50,6 +50,12 @@ const ClothingSchema = new mongoose.Schema({
     detectedFeatures: [String],
     suggestedTags: [String]
   },
+  // 新增：嵌入向量（自然語言搜尋與相似度檢索）
+  embedding: {
+    type: [Number],
+    index: '2dsphere', // 作為佔位；實際用餘弦需應用層處理或外部向量庫
+    select: false
+  },
   createdAt: {
     type: Date,
     default: Date.now
