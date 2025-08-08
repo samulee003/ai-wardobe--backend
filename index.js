@@ -80,7 +80,8 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/clothes', require('./routes/clothes'));
 app.use('/api/outfits', require('./routes/outfits'));
 app.use('/api/recommendations', require('./routes/recommendations'));
-app.use('/api/ai', require('./routes/ai-test'));
+app.use('/api/ai-test', require('./routes/ai-test'));
+app.use('/api/settings', require('./routes/settings'));
 app.use('/api/learning', require('./routes/learning'));
 
 // 基本路由
