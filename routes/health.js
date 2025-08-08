@@ -37,14 +37,17 @@ router.get('/', async (req, res) => {
       external: Math.round(memUsage.external / 1024 / 1024) + ' MB'
     };
 
-    // 檢查 AI 服務狀態
+    // 檢查 AI 服務狀態（含最新指標）
     try {
       const aiService = require('../services/aiService');
+      const metrics = aiService.getMetrics ? aiService.getMetrics() : null;
       healthCheck.services.ai = {
         status: 'available',
         preferredService: aiService.preferredAI,
         hasGeminiKey: !!process.env.GEMINI_API_KEY,
-        hasOpenAIKey: !!process.env.OPENAI_API_KEY
+        hasOpenAIKey: !!process.env.OPENAI_API_KEY,
+        totalAnalyses: metrics?.totalAnalyses || 0,
+        lastAnalysis: metrics?.last || null
       };
     } catch (error) {
       healthCheck.services.ai = {

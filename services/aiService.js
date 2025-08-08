@@ -16,6 +16,13 @@ class AIService {
     
     // 預設使用的AI服務 (可在環境變數中配置)
     this.preferredAI = process.env.PREFERRED_AI_SERVICE || 'gemini';
+
+    // 健康指標（記憶體級，重啟後重置）
+    this.metrics = {
+      totalAnalyses: 0,
+      byService: {}, // { openai: { count, lastLatencyMs, errors }, ... }
+      last: null // { aiService, latencyMs, at, isError }
+    };
   }
 
   // 衣物識別主函數（加入耗時量測與強健錯誤處理）
@@ -45,7 +52,7 @@ class AIService {
       }
       
       const latencyMs = Date.now() - startAt;
-      return {
+      const result = {
         category: analysis.category,
         subCategory: analysis.subCategory,
         colors: analysis.colors,
@@ -57,10 +64,13 @@ class AIService {
         aiService: analysis.aiService || this.preferredAI,
         latencyMs
       };
+      this.recordMetrics(result.aiService, latencyMs);
+      return result;
     } catch (error) {
       const latencyMs = Date.now() - startAt;
       console.error('AI分析錯誤:', error.message || error);
       const fallback = this.getFallbackAnalysis();
+      this.recordMetrics('fallback', latencyMs, true);
       return { ...fallback, aiService: 'fallback', latencyMs };
     }
   }
@@ -137,6 +147,34 @@ class AIService {
     }
     
     throw new Error('無法解析OpenAI回應');
+  }
+
+  // 指標記錄
+  recordMetrics(service, latencyMs, isError = false) {
+    this.metrics.totalAnalyses += 1;
+    if (!this.metrics.byService[service]) {
+      this.metrics.byService[service] = { count: 0, lastLatencyMs: 0, errors: 0 };
+    }
+    this.metrics.byService[service].count += 1;
+    this.metrics.byService[service].lastLatencyMs = latencyMs;
+    if (isError) this.metrics.byService[service].errors += 1;
+    this.metrics.last = { aiService: service, latencyMs, at: new Date().toISOString(), isError };
+  }
+
+  // 對外提供健康指標
+  getMetrics() {
+    return {
+      preferredAI: this.preferredAI,
+      totalAnalyses: this.metrics.totalAnalyses,
+      byService: this.metrics.byService,
+      last: this.metrics.last,
+      hasKeys: {
+        openai: !!this.openaiApiKey,
+        anthropic: !!this.anthropicApiKey,
+        gemini: !!this.geminiApiKey,
+        googleVision: !!this.visionApiKey
+      }
+    };
   }
 
   // Anthropic Claude Vision 分析
