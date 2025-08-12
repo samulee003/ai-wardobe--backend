@@ -459,8 +459,23 @@ router.delete('/:id', auth, async (req, res) => {
 // 獲取衣櫃統計
 router.get('/statistics', auth, async (req, res) => {
   try {
-    const userId = req.user.id;
+    // 若資料庫未連線（雲端暫時性問題），回傳友善的空統計而非 500
     const mongoose = require('mongoose');
+    if (!mongoose.connection || mongoose.connection.readyState !== 1) {
+      return res.json({
+        message: '暫無衣物數據（資料庫未連線）',
+        totalClothes: 0,
+        categoryDistribution: {},
+        colorDistribution: {},
+        averageWearCount: 0,
+        wearRange: { min: 0, max: 0 },
+        totalWears: 0,
+        rarelyWornCount: 0,
+        recentWearsCount: 0,
+        utilizationRate: 0
+      });
+    }
+    const userId = req.user.id;
     
     const stats = await Clothing.aggregate([
       { $match: { userId: mongoose.Types.ObjectId(userId) } },
