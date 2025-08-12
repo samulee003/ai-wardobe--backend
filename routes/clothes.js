@@ -20,7 +20,21 @@ const storage = multer.diskStorage({
 router.post('/search', auth, async (req, res) => {
   try {
     const { q = '', limit = 10 } = req.body || {};
-    const userId = req.user.id;
+    const userId = req.user && req.user.id ? req.user.id : null;
+    if (!userId) {
+      return res.json({ 
+        message: '暫無衣物數據（未登入）',
+        totalClothes: 0,
+        categoryDistribution: {},
+        colorDistribution: {},
+        averageWearCount: 0,
+        wearRange: { min: 0, max: 0 },
+        totalWears: 0,
+        rarelyWornCount: 0,
+        recentWearsCount: 0,
+        utilizationRate: 0
+      });
+    }
 
     const text = String(q || '').trim();
     if (!text) {
