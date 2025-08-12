@@ -678,8 +678,19 @@ router.get('/statistics', auth, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('統計錯誤:', error);
-    res.status(500).json({ message: '獲取統計失敗', error: error.message });
+    console.error('統計錯誤(降級為空統計):', error?.message || error);
+    return res.json({
+      message: '暫無衣物數據（降級）',
+      totalClothes: 0,
+      categoryDistribution: {},
+      colorDistribution: {},
+      averageWearCount: 0,
+      wearRange: { min: 0, max: 0 },
+      totalWears: 0,
+      rarelyWornCount: 0,
+      recentWearsCount: 0,
+      utilizationRate: 0
+    });
   }
 });
 
