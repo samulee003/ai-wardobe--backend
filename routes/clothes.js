@@ -3,6 +3,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const Clothing = require('../models/Clothing');
+const mongoose = require('mongoose');
 const aiService = require('../services/aiService');
 const auth = require('../middleware/auth');
 
@@ -228,7 +229,6 @@ router.post('/batch-upload', auth, upload.array('images', 10), async (req, res) 
 
     // 並發控制：避免AI服務過載
     const CONCURRENT_LIMIT = 3; // 最多同時處理3張圖片
-    const mongoose = require('mongoose');
     const dbConnected = mongoose.connection && mongoose.connection.readyState === 1;
     const processResults = [];
     
@@ -246,54 +246,37 @@ router.post('/batch-upload', auth, upload.array('images', 10), async (req, res) 
           const imageBuffer = await fs.promises.readFile(file.path);
           const imageBase64 = imageBuffer.toString('base64');
 
-          // 開始數據庫事務（若已連線）
-          let session = null;
+          // AI分析衣物
+          const aiAnalysis = await aiService.analyzeClothing(imageBase64);
+
+          // 創建衣物記錄
+          const clothing = new Clothing({
+            userId: req.user.id,
+            imageUrl: `/uploads/${file.filename}`,
+            category: aiAnalysis.category,
+            subCategory: aiAnalysis.subCategory,
+            colors: aiAnalysis.colors,
+            style: aiAnalysis.style,
+            season: aiAnalysis.season,
+            aiAnalysis: {
+              confidence: aiAnalysis.confidence,
+              detectedFeatures: aiAnalysis.detectedFeatures,
+              suggestedTags: aiAnalysis.suggestedTags
+            }
+          });
+
           if (dbConnected) {
-            session = await mongoose.startSession();
-            session.startTransaction();
+            // 在非 replica set 環境不使用交易，直接保存
+            await clothing.save();
           }
 
-          try {
-            // AI分析衣物
-            const aiAnalysis = await aiService.analyzeClothing(imageBase64);
-
-            // 創建衣物記錄
-            const clothing = new Clothing({
-              userId: req.user.id,
-              imageUrl: `/uploads/${file.filename}`,
-              category: aiAnalysis.category,
-              subCategory: aiAnalysis.subCategory,
-              colors: aiAnalysis.colors,
-              style: aiAnalysis.style,
-              season: aiAnalysis.season,
-              aiAnalysis: {
-                confidence: aiAnalysis.confidence,
-                detectedFeatures: aiAnalysis.detectedFeatures,
-                suggestedTags: aiAnalysis.suggestedTags
-              }
-            });
-
-            if (dbConnected && session) {
-              await clothing.save({ session });
-              await session.commitTransaction();
-              session.endSession();
-            }
-
-            return {
-              index: actualIndex,
-              success: true,
-              clothing: clothing,
-              aiAnalysis: aiAnalysis,
-              filename: file.filename
-            };
-
-          } catch (transactionError) {
-            if (dbConnected && session) {
-              await session.abortTransaction();
-              session.endSession();
-            }
-            throw transactionError;
-          }
+          return {
+            index: actualIndex,
+            success: true,
+            clothing: clothing,
+            aiAnalysis: aiAnalysis,
+            filename: file.filename
+          };
 
         } catch (error) {
           console.error(`處理第 ${actualIndex + 1} 張圖片失敗:`, error);
@@ -311,7 +294,7 @@ router.post('/batch-upload', auth, upload.array('images', 10), async (req, res) 
           return {
             index: actualIndex,
             success: false,
-            error: error.message,
+            error: error?.message || String(error),
             filename: file.filename
           };
         }
