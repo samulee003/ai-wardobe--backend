@@ -103,7 +103,7 @@ router.get('/:id/similar', auth, async (req, res) => {
 
 const upload = multer({ 
   storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB限制
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB 限制
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|gif/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
