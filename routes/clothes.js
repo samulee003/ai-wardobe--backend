@@ -132,6 +132,25 @@ router.post('/upload', auth, upload.single('image'), async (req, res) => {
     // AI分析衣物
     const aiAnalysis = await aiService.analyzeClothing(imageBase64);
 
+    // 若資料庫未連線，回傳分析結果與檔案路徑，暫不保存資料庫
+    const mongoose = require('mongoose');
+    if (!mongoose.connection || mongoose.connection.readyState !== 1) {
+      return res.status(200).json({
+        message: 'AI 分析完成（資料庫未連線，未保存到雲端）',
+        clothing: {
+          _id: null,
+          imageUrl: `/uploads/${req.file.filename}`,
+          category: aiAnalysis.category,
+          subCategory: aiAnalysis.subCategory,
+          colors: aiAnalysis.colors,
+          style: aiAnalysis.style,
+          season: aiAnalysis.season,
+          dbSaved: false
+        },
+        aiAnalysis
+      });
+    }
+
     // 構建文字描述用於向量嵌入
     const textForEmbedding = [
       aiAnalysis.category,
@@ -187,6 +206,8 @@ router.post('/batch-upload', auth, upload.array('images', 10), async (req, res) 
 
     // 並發控制：避免AI服務過載
     const CONCURRENT_LIMIT = 3; // 最多同時處理3張圖片
+    const mongoose = require('mongoose');
+    const dbConnected = mongoose.connection && mongoose.connection.readyState === 1;
     const processResults = [];
     
     for (let i = 0; i < req.files.length; i += CONCURRENT_LIMIT) {
@@ -203,10 +224,12 @@ router.post('/batch-upload', auth, upload.array('images', 10), async (req, res) 
           const imageBuffer = await fs.promises.readFile(file.path);
           const imageBase64 = imageBuffer.toString('base64');
 
-          // 開始數據庫事務
-          const mongoose = require('mongoose');
-          const session = await mongoose.startSession();
-          session.startTransaction();
+          // 開始數據庫事務（若已連線）
+          let session = null;
+          if (dbConnected) {
+            session = await mongoose.startSession();
+            session.startTransaction();
+          }
 
           try {
             // AI分析衣物
@@ -228,12 +251,11 @@ router.post('/batch-upload', auth, upload.array('images', 10), async (req, res) 
               }
             });
 
-            // 在事務中保存
-            await clothing.save({ session });
-            
-            // 提交事務
-            await session.commitTransaction();
-            session.endSession();
+            if (dbConnected && session) {
+              await clothing.save({ session });
+              await session.commitTransaction();
+              session.endSession();
+            }
 
             return {
               index: actualIndex,
@@ -244,9 +266,10 @@ router.post('/batch-upload', auth, upload.array('images', 10), async (req, res) 
             };
 
           } catch (transactionError) {
-            // 回滾事務
-            await session.abortTransaction();
-            session.endSession();
+            if (dbConnected && session) {
+              await session.abortTransaction();
+              session.endSession();
+            }
             throw transactionError;
           }
 
