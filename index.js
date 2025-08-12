@@ -9,11 +9,13 @@ const fs = require('fs');
 // 載入環境變數
 dotenv.config();
 
-// 確保uploads目錄存在
-const uploadsDir = path.join(__dirname, '..', 'uploads');
+// 確保 uploads 目錄存在（同時支援單倉庫與分離後端倉庫）
+const monorepoUploads = path.join(__dirname, '..', 'uploads');
+const standaloneUploads = path.join(__dirname, 'uploads');
+let uploadsDir = fs.existsSync(monorepoUploads) ? monorepoUploads : standaloneUploads;
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
-  console.log('創建uploads目錄');
+  console.log('創建 uploads 目錄於:', uploadsDir);
 }
 
 const app = express();
@@ -28,16 +30,58 @@ console.log('MONGODB_URL 是否存在:', !!process.env.MONGODB_URL);
 console.log('所有 MONGO 相關環境變數:', Object.keys(process.env).filter(key => key.toLowerCase().includes('mongo')));
 console.log('========================');
 
-// 中間件
-app.use(cors());
-app.use(express.json());
+// 中間件 - CORS 配置
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'https://ai-wardobe.zeabur.app',
+    /\.zeabur\.app$/
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+// 允許大圖以 base64 JSON 傳入（僅用於無持久化的分析端點）
+app.use(express.json({ limit: '10mb' }));
 app.use('/uploads', express.static('uploads'));
 
 // 資料庫連接
 console.log('MongoDB URI:', process.env.MONGODB_URI ? '已設置' : '未設置');
 console.log('所有環境變數:', Object.keys(process.env).filter(key => key.includes('MONGO')));
 
-const mongoUri = process.env.MONGODB_URI || process.env.MONGODB_URL;
+// 在 Zeabur 上，資料庫連線資訊常以 MONGO_* 提供。
+// 這裡智能合併多來源：MONGODB_URI/MONGODB_URL/MONGO_URI/MONGO_CONNECTION_STRING
+// 若僅提供帳密與主機埠，則動態拼裝；並確保附帶資料庫名稱與 authSource。
+const dbName = process.env.MONGODB_DBNAME || 'smart-wardrobe';
+const assembledFromPieces = (process.env.MONGO_USERNAME && process.env.MONGO_PASSWORD && process.env.MONGO_HOST && process.env.MONGO_PORT)
+  ? `mongodb://${encodeURIComponent(process.env.MONGO_USERNAME)}:${encodeURIComponent(process.env.MONGO_PASSWORD)}@${process.env.MONGO_HOST}:${process.env.MONGO_PORT}`
+  : null;
+
+let mongoUri = process.env.MONGODB_URI
+  || process.env.MONGODB_URL
+  || process.env.MONGO_URI
+  || process.env.MONGO_CONNECTION_STRING
+  || assembledFromPieces
+  || '';
+
+const ensureDbAndAuthSource = (uri) => {
+  if (!uri) return uri;
+  try {
+    // 僅在缺少資料庫路徑時補上 dbName；不再強制附加 authSource，避免與供應商預設衝突
+    const hasDbPath = /mongodb(?:\+srv)?:\/\/[^/]+\/[^?]/.test(uri);
+    let out = uri;
+    if (!hasDbPath) {
+      out += `/${dbName}`;
+    }
+    return out;
+  } catch (_) {
+    return uri;
+  }
+};
+
+if (mongoUri) {
+  mongoUri = ensureDbAndAuthSource(mongoUri);
+}
 
 if (!mongoUri) {
   console.error('❌ 嚴重錯誤: 沒有找到 MongoDB 連接字符串！');
