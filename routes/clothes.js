@@ -92,6 +92,66 @@ router.post('/search', auth, async (req, res) => {
   }
 });
 
+// ==== 公用：AI 輸出正規化（避免 Schema 驗證錯誤） ====
+const ALLOWED_SEASONS = ['春', '夏', '秋', '冬'];
+const normalizeSeasons = (input) => {
+  if (!input) return ['春', '秋'];
+  const toArray = Array.isArray(input) ? input : [input];
+  const mapped = toArray.flatMap((s) => {
+    if (!s) return [];
+    const t = String(s).trim();
+    switch (t) {
+      case '春季':
+      case '春天':
+      case '春':
+        return ['春'];
+      case '夏季':
+      case '夏天':
+      case '夏':
+        return ['夏'];
+      case '秋季':
+      case '秋天':
+      case '秋':
+        return ['秋'];
+      case '冬季':
+      case '冬天':
+      case '冬':
+        return ['冬'];
+      case '全年':
+      case '四季':
+      case '全季':
+        return ['春', '夏', '秋', '冬'];
+      default:
+        return [];
+    }
+  });
+  const unique = Array.from(new Set(mapped.filter((s) => ALLOWED_SEASONS.includes(s))));
+  return unique.length > 0 ? unique : ['春', '秋'];
+};
+
+const normalizeColors = (input) => {
+  if (!input) return ['未知'];
+  const toArray = Array.isArray(input) ? input : [input];
+  const mapColor = (c) => {
+    if (!c) return null;
+    const t = String(c).trim();
+    // 常見同義詞歸一
+    if (/淺藍|深藍|藍/.test(t)) return '藍色';
+    if (/淺綠|深綠|綠/.test(t)) return '綠色';
+    if (/灰|灰白/.test(t)) return '灰色';
+    if (/白/.test(t)) return '白色';
+    if (/黑/.test(t)) return '黑色';
+    if (/黃|金/.test(t)) return '黃色';
+    if (/橘|橙/.test(t)) return '橙色';
+    if (/紅|酒紅/.test(t)) return '紅色';
+    if (/紫/.test(t)) return '紫色';
+    if (/棕|咖/.test(t)) return '棕色';
+    return t.length <= 6 ? t : null;
+  };
+  const mapped = toArray.map(mapColor).filter(Boolean);
+  return mapped.length > 0 ? Array.from(new Set(mapped)).slice(0, 3) : ['未知'];
+};
+
 // 查找相似衣物（用於上傳去重提示）
 router.get('/:id/similar', auth, async (req, res) => {
   try {
@@ -249,19 +309,35 @@ router.post('/batch-upload', auth, upload.array('images', 10), async (req, res) 
           // AI分析衣物
           const aiAnalysis = await aiService.analyzeClothing(imageBase64);
 
+          // 正規化 AI 結果，避免 Schema 驗證錯誤
+          const normalized = {
+            category: aiAnalysis.category || '上衣',
+            subCategory: aiAnalysis.subCategory || '一般',
+            colors: normalizeColors(aiAnalysis.colors),
+            style: aiAnalysis.style || '休閒',
+            season: normalizeSeasons(aiAnalysis.season),
+            ai: {
+              confidence: aiAnalysis.confidence,
+              detectedFeatures: aiAnalysis.detectedFeatures,
+              suggestedTags: aiAnalysis.suggestedTags,
+              provider: aiAnalysis.aiService,
+              latencyMs: aiAnalysis.latencyMs
+            }
+          };
+
           // 創建衣物記錄
           const clothing = new Clothing({
             userId: req.user.id,
             imageUrl: `/uploads/${file.filename}`,
-            category: aiAnalysis.category,
-            subCategory: aiAnalysis.subCategory,
-            colors: aiAnalysis.colors,
-            style: aiAnalysis.style,
-            season: aiAnalysis.season,
+            category: normalized.category,
+            subCategory: normalized.subCategory,
+            colors: normalized.colors,
+            style: normalized.style,
+            season: normalized.season,
             aiAnalysis: {
-              confidence: aiAnalysis.confidence,
-              detectedFeatures: aiAnalysis.detectedFeatures,
-              suggestedTags: aiAnalysis.suggestedTags
+              confidence: normalized.ai.confidence,
+              detectedFeatures: normalized.ai.detectedFeatures,
+              suggestedTags: normalized.ai.suggestedTags
             }
           });
 
