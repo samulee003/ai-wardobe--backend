@@ -514,22 +514,40 @@ router.get('/statistics', auth, async (req, res) => {
     }
     const userId = req.user.id;
     
-    const stats = await Clothing.aggregate([
-      { $match: { userId: mongoose.Types.ObjectId(userId) } },
-      {
-        $group: {
-          _id: null,
-          totalClothes: { $sum: 1 },
-          categories: { $push: '$category' },
-          colors: { $push: { $arrayElemAt: ['$colors', 0] } },
-          styles: { $push: '$style' },
-          avgWearCount: { $avg: '$wearCount' },
-          leastWorn: { $min: '$wearCount' },
-          mostWorn: { $max: '$wearCount' },
-          totalWears: { $sum: '$wearCount' }
+    let stats = [];
+    try {
+      stats = await Clothing.aggregate([
+        { $match: { userId: mongoose.Types.ObjectId(userId) } },
+        {
+          $group: {
+            _id: null,
+            totalClothes: { $sum: 1 },
+            categories: { $push: '$category' },
+            colors: { $push: { $arrayElemAt: ['$colors', 0] } },
+            styles: { $push: '$style' },
+            avgWearCount: { $avg: '$wearCount' },
+            leastWorn: { $min: '$wearCount' },
+            mostWorn: { $max: '$wearCount' },
+            totalWears: { $sum: '$wearCount' }
+          }
         }
-      }
-    ]);
+      ]);
+    } catch (aggErr) {
+      // 聚合失敗時以空統計回應，避免 500
+      console.warn('統計聚合失敗，返回空統計:', aggErr.message);
+      return res.json({
+        message: '暫無衣物數據',
+        totalClothes: 0,
+        categoryDistribution: {},
+        colorDistribution: {},
+        averageWearCount: 0,
+        wearRange: { min: 0, max: 0 },
+        totalWears: 0,
+        rarelyWornCount: 0,
+        recentWearsCount: 0,
+        utilizationRate: 0
+      });
+    }
 
     if (stats.length === 0) {
       return res.json({ 
@@ -538,7 +556,11 @@ router.get('/statistics', auth, async (req, res) => {
         categoryDistribution: {},
         colorDistribution: {},
         averageWearCount: 0,
-        wearRange: { min: 0, max: 0 }
+        wearRange: { min: 0, max: 0 },
+        totalWears: 0,
+        rarelyWornCount: 0,
+        recentWearsCount: 0,
+        utilizationRate: 0
       });
     }
 
