@@ -110,7 +110,7 @@ describe('AI Service Tests', () => {
         occasion: 'daily',
         preferredStyles: ['休閒'],
         colorPreferences: ['藍色'],
-        adhd: true
+        // 已移除 ADHD 偏好
       };
 
       const recommendations = await aiService.generateOutfitRecommendations(mockClothes, mockPreferences);

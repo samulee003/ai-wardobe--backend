@@ -32,7 +32,7 @@ router.get('/recommendations', auth, async (req, res) => {
       occasion: occasion || 'daily',
       preferredStyles: req.user.profile?.preferredStyles || [],
       colorPreferences: req.user.profile?.colorPreferences || [],
-      adhd: req.user.preferences?.adhd || false
+      // 已移除 ADHD 偏好
     };
 
     // 生成推薦

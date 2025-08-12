@@ -46,6 +46,7 @@ router.get('/', async (req, res) => {
         preferredService: aiService.preferredAI,
         hasGeminiKey: !!process.env.GEMINI_API_KEY,
         hasOpenAIKey: !!process.env.OPENAI_API_KEY,
+        hasKimiKey: !!process.env.KIMI_API_KEY,
         totalAnalyses: metrics?.totalAnalyses || 0,
         lastAnalysis: metrics?.last || null
       };

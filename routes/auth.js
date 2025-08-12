@@ -31,8 +31,6 @@ router.post('/register', async (req, res) => {
         lifestyle: profile.lifestyle || ''
       },
       preferences: {
-        adhd: profile.adhd || false,
-        simplifiedInterface: profile.adhd || false, // ADHD用戶默認開啟簡化界面
         reminderFrequency: 'weekly',
         autoRecommendation: true
       }

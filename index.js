@@ -43,7 +43,8 @@ app.use(cors({
 }));
 // 允許大圖以 base64 JSON 傳入（僅用於無持久化的分析端點）
 app.use(express.json({ limit: '10mb' }));
-app.use('/uploads', express.static('uploads'));
+// 使用剛建立的 uploadsDir 作為靜態目錄，避免相對路徑不一致
+app.use('/uploads', express.static(uploadsDir));
 
 // 資料庫連接
 console.log('MongoDB URI:', process.env.MONGODB_URI ? '已設置' : '未設置');

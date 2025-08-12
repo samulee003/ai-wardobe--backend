@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 const Clothing = require('../models/Clothing');
 const aiService = require('../services/aiService');
 const auth = require('../middleware/auth');
@@ -10,7 +11,14 @@ const router = express.Router();
 // 設置multer用於文件上傳
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, 'uploads/');
+    // 使用絕對路徑，確保與 server/index.js 中建立的 uploads 目錄一致
+    const uploadsPath = path.join(__dirname, '..', 'uploads');
+    try {
+      if (!fs.existsSync(uploadsPath)) fs.mkdirSync(uploadsPath, { recursive: true });
+      cb(null, uploadsPath);
+    } catch (err) {
+      cb(err);
+    }
   },
   filename: (req, file, cb) => {
     cb(null, Date.now() + path.extname(file.originalname));

@@ -46,6 +46,16 @@ router.post('/', auth, async (req, res) => {
           }
           result = await aiService.analyzeWithGemini(testImage);
           break;
+        case 'kimi':
+          if (!process.env.KIMI_API_KEY) {
+            return res.status(400).json({
+              message: 'KIMI API Key 未設定',
+              provider,
+              available: false
+            });
+          }
+          result = await aiService.analyzeWithKimi(testImage);
+          break;
           
         case 'fallback':
           result = await aiService.getFallbackAnalysis();
@@ -106,7 +116,7 @@ router.get('/status', auth, async (req, res) => {
   try {
     const metrics = aiService.getMetrics();
     
-    const status = {
+      const status = {
       providers: {
         openai: {
           available: !!process.env.OPENAI_API_KEY,
@@ -120,6 +130,12 @@ router.get('/status', auth, async (req, res) => {
           avgLatency: metrics.byService.gemini?.avgLatency || 0,
           lastUsed: metrics.byService.gemini?.lastUsed || null
         },
+          kimi: {
+            available: !!process.env.KIMI_API_KEY,
+            totalAnalyses: metrics.byService.kimi?.count || 0,
+            avgLatency: metrics.byService.kimi?.avgLatency || 0,
+            lastUsed: metrics.byService.kimi?.lastUsed || null
+          },
         fallback: {
           available: true,
           totalAnalyses: metrics.byService.fallback?.count || 0,

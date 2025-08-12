@@ -24,14 +24,6 @@ const UserSchema = new mongoose.Schema({
         lifestyle: String // 工作、休閒、學生等
     },
     preferences: {
-        adhd: {
-            type: Boolean,
-            default: false
-        },
-        simplifiedInterface: {
-            type: Boolean,
-            default: false
-        },
         reminderFrequency: {
             type: String,
             enum: ['daily', 'weekly', 'monthly', 'never'],

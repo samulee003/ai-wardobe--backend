@@ -6,12 +6,14 @@ class AIService {
     this.openaiApiKey = process.env.OPENAI_API_KEY;
     this.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
     this.geminiApiKey = process.env.GEMINI_API_KEY;
+    this.kimiApiKey = process.env.KIMI_API_KEY;
     this.visionApiKey = process.env.GOOGLE_VISION_API_KEY;
     
     // API端點
     this.openaiUrl = 'https://api.openai.com/v1/chat/completions';
     this.anthropicUrl = 'https://api.anthropic.com/v1/messages';
     this.geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${this.geminiApiKey}`;
+    this.kimiUrl = 'https://api.moonshot.cn/v1/chat/completions';
     this.visionApiUrl = 'https://vision.googleapis.com/v1/images:annotate';
     
     // 預設使用的AI服務 (可在環境變數中配置)
@@ -45,6 +47,9 @@ class AIService {
         case 'gemini':
           analysis = await this.analyzeWithGemini(imageBase64);
           break;
+        case 'kimi':
+          analysis = await this.analyzeWithKimi(imageBase64);
+          break;
         case 'google-vision':
           const visionResult = await this.detectClothingWithVision(imageBase64);
           analysis = this.processVisionResult(visionResult);
@@ -76,6 +81,44 @@ class AIService {
       this.recordMetrics('fallback', latencyMs, true);
       return { ...fallback, aiService: 'fallback', latencyMs };
     }
+  }
+
+  // Moonshot Kimi Vision 分析（OpenAI 相容接口）
+  async analyzeWithKimi(imageBase64) {
+    const model = process.env.KIMI_VISION_MODEL || 'moonshot-v1-8k-vision-preview';
+    const prompt = `請分析這張衣物圖片，並以JSON格式回傳以下資訊：\n{\n  "category": "衣物主類別(上衣/下裝/外套/鞋子/配件/內衣/運動服/正裝)",\n  "subCategory": "具體類型(如T恤、襯衫、牛仔褲等)",\n  "colors": ["主要顏色1", "主要顏色2", "主要顏色3"],\n  "style": "風格(休閒/正式/運動/時尚/復古/簡約/街頭)",\n  "season": ["適合季節"],\n  "features": ["特徵描述"],\n  "tags": ["標籤"],\n  "confidence": 0.9\n}`;
+
+    const body = {
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            {
+              type: 'image_url',
+              image_url: { url: `data:image/jpeg;base64,${imageBase64}` }
+            }
+          ]
+        }
+      ]
+    };
+
+    const response = await axios.post(this.kimiUrl, body, {
+      headers: {
+        Authorization: `Bearer ${this.kimiApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
+
+    const content = response.data?.choices?.[0]?.message?.content || '';
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const analysis = JSON.parse(jsonMatch[0]);
+      return { ...analysis, aiService: 'kimi' };
+    }
+    throw new Error('無法解析Kimi回應');
   }
 
   // OpenAI GPT-4 Vision 分析
@@ -262,7 +305,7 @@ class AIService {
 
   // Google Gemini Vision 分析
   async analyzeWithGemini(imageBase64) {
-    const prompt = `請仔細分析這張衣物圖片，作為專業的時尚顧問，為36歲ADHD男性用戶提供詳細的衣物資訊。請以JSON格式回傳：
+    const prompt = `請仔細分析這張衣物圖片，作為專業的時尚顧問，為成人用戶提供詳細的衣物資訊。請以JSON格式回傳：
 
 {
   "category": "衣物主類別(上衣/下裝/外套/鞋子/配件/內衣/運動服/正裝)",
@@ -279,11 +322,10 @@ class AIService {
   "careInstructions": "保養建議"
 }
 
-請特別注意：
-1. 準確識別衣物類別和顏色
-2. 評估衣物的實用性和搭配性
-3. 考慮ADHD用戶的簡化需求
-4. 提供實用的穿搭建議`;
+    請特別注意：
+    1. 準確識別衣物類別和顏色
+    2. 評估衣物的實用性和搭配性
+    3. 提供實用的穿搭建議`;
 
     const response = await axios.post(this.geminiUrl, {
       contents: [{
@@ -319,7 +361,7 @@ class AIService {
 
   // 自動降級分析
   async analyzeWithFallback(imageBase64) {
-    const services = ['gemini', 'openai', 'anthropic', 'google-vision'];
+    const services = ['gemini', 'openai', 'kimi', 'anthropic', 'google-vision'];
     
     for (const service of services) {
       try {
@@ -331,6 +373,9 @@ class AIService {
             break;
           case 'gemini':
             if (this.geminiApiKey) return await this.analyzeWithGemini(imageBase64);
+            break;
+          case 'kimi':
+            if (this.kimiApiKey) return await this.analyzeWithKimi(imageBase64);
             break;
           case 'anthropic':
             if (this.anthropicApiKey) return await this.analyzeWithAnthropic(imageBase64);
@@ -551,7 +596,7 @@ class AIService {
       lastWorn: item.lastWorn
     }));
 
-    const prompt = `作為專業的時尚造型師，請為一位36歲ADHD男性推薦穿搭組合。
+    const prompt = `作為專業的時尚造型師，請為一位成年男性推薦穿搭組合。
 
 用戶衣物清單：
 ${JSON.stringify(clothesData, null, 2)}
@@ -580,13 +625,7 @@ ${JSON.stringify(preferences, null, 2)}
     }
   ]
 }
-
-特別考慮ADHD用戶需求：
-- 簡單易搭配的組合
-- 減少決策疲勞
-- 實用性優先
-- 顏色搭配和諧
-- 風格統一一致`;
+    `;
 
     let response;
     
