@@ -1,4 +1,5 @@
 const axios = require('axios');
+const sharp = require('sharp');
 
 class AIService {
   constructor() {
@@ -72,6 +73,21 @@ class AIService {
         aiService: analysis.aiService || this.preferredAI,
         latencyMs
       };
+      // 若顏色缺失或信心不足，使用本地啟發式再補強
+      if (!result.colors || result.colors.length === 0 || (result.colors.length === 1 && result.colors[0] === '未知') || (typeof result.confidence === 'number' && result.confidence < 0.6)) {
+        const local = await this.analyzeWithLocalHeuristics(imageBase64).catch(() => null);
+        if (local) {
+          result.colors = local.colors && local.colors.length ? local.colors : result.colors;
+          if (!result.subCategory || result.subCategory === '一般') {
+            result.subCategory = local.subCategory || result.subCategory;
+          }
+          if (!result.category) result.category = local.category || '上衣';
+          if (!result.season || result.season.length === 0) result.season = local.season || ['春', '秋'];
+          result.aiService = `${result.aiService}+local`;
+          result.confidence = Math.max(result.confidence || 0.5, 0.7);
+        }
+      }
+
       this.recordMetrics(result.aiService, latencyMs);
       return result;
     } catch (error) {
@@ -565,6 +581,106 @@ class AIService {
       detectedFeatures: ['衣物'],
       suggestedTags: ['需要重新分析']
     };
+  }
+
+  // === 本地啟發式分析（無金鑰或信心不足時） ===
+  async analyzeWithLocalHeuristics(imageBase64) {
+    const buffer = Buffer.from(imageBase64, 'base64');
+    // 降采樣以提速
+    const img = sharp(buffer).resize({ width: 64, height: 64, fit: 'inside' });
+    const { data, info } = await img.raw().ensureAlpha().toBuffer({ resolveWithObject: true });
+
+    const counts = new Map();
+    const push = (name) => counts.set(name, (counts.get(name) || 0) + 1);
+
+    // 量化顏色並計數
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const a = data[i + 3];
+      if (a < 10) continue; // 忽略透明
+      push(this.mapRgbToColorName(r, g, b));
+    }
+
+    // 取得前 3 大顏色
+    const palette = Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([name]) => name)
+      .filter((n) => n !== '其他')
+      .slice(0, 3);
+
+    // 嘗試偵測條紋（簡化版：沿 X 方向的亮度變化）
+    const stripes = this.detectStripes(data, info.width, info.height);
+
+    return {
+      category: '上衣',
+      subCategory: stripes ? '襯衫' : '一般',
+      colors: palette.length ? palette : ['未知'],
+      style: stripes ? '休閒' : '簡約',
+      season: ['春', '秋'],
+      confidence: 0.7,
+      aiService: 'local-heuristics'
+    };
+  }
+
+  detectStripes(raw, width, height) {
+    // 計算每列亮度變化量（簡化）
+    let totalDelta = 0;
+    let samples = 0;
+    for (let y = 0; y < height; y += 2) {
+      let prevL = null;
+      for (let x = 0; x < width; x += 2) {
+        const i = (y * width + x) * 4;
+        const r = raw[i];
+        const g = raw[i + 1];
+        const b = raw[i + 2];
+        const l = 0.2126 * r + 0.7152 * g + 0.0722 * b; // 相對亮度
+        if (prevL !== null) {
+          totalDelta += Math.abs(l - prevL);
+          samples++;
+        }
+        prevL = l;
+      }
+    }
+    const avgDelta = samples > 0 ? totalDelta / samples : 0;
+    return avgDelta > 10; // 閾值（經驗值）
+  }
+
+  mapRgbToColorName(r, g, b) {
+    // 轉 HSL 以方便分群
+    const { h, s, l } = this.rgbToHsl(r, g, b);
+    if (l > 0.9) return '白色';
+    if (l < 0.12) return '黑色';
+    if (s < 0.12) return '灰色';
+    if (h < 15 || h >= 345) return '紅色';
+    if (h < 40) return '橙色';
+    if (h < 65) return '黃色';
+    if (h < 170) return '綠色';
+    if (h < 200) return '青色';
+    if (h < 255) return '藍色';
+    if (h < 290) return '紫色';
+    if (h < 330) return '粉色';
+    return '棕色';
+  }
+
+  rgbToHsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+    if (max === min) {
+      h = s = 0; // 無色
+    } else {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max - min);
+      switch (max) {
+        case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+        case g: h = (b - r) / d + 2; break;
+        case b: h = (r - g) / d + 4; break;
+      }
+      h /= 6;
+    }
+    return { h: Math.round(h * 360), s, l };
   }
 
   // AI驅動的穿搭推薦
