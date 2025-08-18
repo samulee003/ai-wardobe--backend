@@ -1,5 +1,7 @@
 const axios = require('axios');
 const sharp = require('sharp');
+const fs = require('fs');
+const path = require('path');
 
 class AIService {
   constructor() {
@@ -18,6 +20,7 @@ class AIService {
     this.kimiUrl = 'https://api.moonshot.cn/v1/chat/completions';
     this.visionApiUrl = 'https://vision.googleapis.com/v1/images:annotate';
     this.zhipuUrl = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+    this.publicBaseUrl = process.env.PUBLIC_BASE_URL || 'http://localhost:5000';
     
     // 預設使用的AI服務 (可在環境變數中配置)
     this.preferredAI = process.env.PREFERRED_AI_SERVICE || 'gemini';
@@ -31,6 +34,26 @@ class AIService {
 
     // 嵌入模型
     this.openaiEmbeddingModel = process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
+  }
+
+  // 取得/建立 uploads 目錄（與 index.js 的邏輯保持一致）
+  getUploadsDir() {
+    const monorepoUploads = path.join(__dirname, '..', 'uploads');
+    const standaloneUploads = path.join(__dirname, 'uploads');
+    const uploadsDir = fs.existsSync(monorepoUploads) ? monorepoUploads : standaloneUploads;
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+    return uploadsDir;
+  }
+
+  // 將 base64 圖片寫入 uploads，回傳可公開存取的 URL
+  async base64ToPublicUrl(imageBase64, ext = 'jpg') {
+    const uploadsDir = this.getUploadsDir();
+    const filename = `zhipu_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+    const filepath = path.join(uploadsDir, filename);
+    await fs.promises.writeFile(filepath, Buffer.from(imageBase64, 'base64'));
+    return `${this.publicBaseUrl.replace(/\/$/, '')}/uploads/${filename}`;
   }
 
   // 衣物識別主函數（加入耗時量測與強健錯誤處理）
@@ -237,6 +260,8 @@ class AIService {
 請仔細觀察衣物的材質、顏色、款式等細節，以JSON格式回傳。`;
 
     try {
+      // Zhipu 對 image_url 需要可訪問的 http(s) 連結，改為臨時文件 URL
+      const imageUrl = await this.base64ToPublicUrl(imageBase64, 'jpg');
       const response = await axios.post(this.zhipuUrl, {
         model: 'glm-4.5v',
         messages: [
@@ -246,7 +271,7 @@ class AIService {
               {
                 type: 'image_url',
                 image_url: {
-                  url: `data:image/jpeg;base64,${imageBase64}`
+                  url: imageUrl
                 }
               },
               {
