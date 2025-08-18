@@ -14,7 +14,7 @@ router.post('/ai-provider', auth, async (req, res) => {
       return res.status(400).json({ message: '請指定 AI 供應商' });
     }
     
-    const validProviders = ['openai', 'gemini', 'fallback'];
+    const validProviders = ['openai', 'gemini', 'kimi', 'zhipu', 'fallback'];
     if (!validProviders.includes(provider)) {
       return res.status(400).json({ message: '無效的 AI 供應商' });
     }
@@ -51,6 +51,8 @@ router.get('/', auth, async (req, res) => {
       aiProvider: process.env.PREFERRED_AI_SERVICE || 'openai',
       hasOpenAIKey: !!process.env.OPENAI_API_KEY,
       hasGeminiKey: !!process.env.GEMINI_API_KEY,
+      hasKimiKey: !!process.env.KIMI_API_KEY,
+      hasZhipuKey: !!process.env.ZHIPU_API_KEY,
       timestamp: new Date().toISOString()
     };
     

@@ -9,6 +9,7 @@ class AIService {
     this.geminiApiKey = process.env.GEMINI_API_KEY;
     this.kimiApiKey = process.env.KIMI_API_KEY;
     this.visionApiKey = process.env.GOOGLE_VISION_API_KEY;
+    this.zhipuApiKey = process.env.ZHIPU_API_KEY;
     
     // API端點
     this.openaiUrl = 'https://api.openai.com/v1/chat/completions';
@@ -16,6 +17,7 @@ class AIService {
     this.geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${this.geminiApiKey}`;
     this.kimiUrl = 'https://api.moonshot.cn/v1/chat/completions';
     this.visionApiUrl = 'https://vision.googleapis.com/v1/images:annotate';
+    this.zhipuUrl = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
     
     // 預設使用的AI服務 (可在環境變數中配置)
     this.preferredAI = process.env.PREFERRED_AI_SERVICE || 'gemini';
@@ -50,6 +52,9 @@ class AIService {
           break;
         case 'kimi':
           analysis = await this.analyzeWithKimi(imageBase64);
+          break;
+        case 'zhipu':
+          analysis = await this.analyzeWithZhipu(imageBase64);
           break;
         case 'google-vision':
           const visionResult = await this.detectClothingWithVision(imageBase64);
@@ -211,6 +216,74 @@ class AIService {
     throw new Error('無法解析OpenAI回應');
   }
 
+  // 智譜清言 GLM-4.5V 分析
+  async analyzeWithZhipu(imageBase64) {
+    if (!this.zhipuApiKey) {
+      throw new Error('未配置智譜API金鑰');
+    }
+
+    const prompt = `請分析這張衣物圖片，並以JSON格式回傳以下資訊：
+{
+  "category": "衣物主類別(上衣/下裝/外套/鞋子/配件/內衣/運動服/正裝)",
+  "subCategory": "具體類型(如T恤、襯衫、牛仔褲等)",
+  "colors": ["主要顏色1", "主要顏色2", "主要顏色3"],
+  "style": "風格(休閒/正式/運動/時尚/復古/簡約/街頭)",
+  "season": ["適合季節"],
+  "features": ["特徵描述"],
+  "tags": ["標籤"],
+  "confidence": 0.9
+}
+
+請仔細觀察衣物的材質、顏色、款式等細節，以JSON格式回傳。`;
+
+    try {
+      const response = await axios.post(this.zhipuUrl, {
+        model: 'glm-4.5v',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/jpeg;base64,${imageBase64}`
+                }
+              },
+              {
+                type: 'text',
+                text: prompt
+              }
+            ]
+          }
+        ],
+        thinking: { type: 'disabled' }, // 關閉思考模式，提升速度
+        stream: false
+      }, {
+        headers: {
+          'Authorization': `Bearer ${this.zhipuApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      });
+
+      const content = response.data?.choices?.[0]?.message?.content || '';
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      
+      if (jsonMatch) {
+        const analysis = JSON.parse(jsonMatch[0]);
+        return {
+          ...analysis,
+          aiService: 'zhipu'
+        };
+      }
+      
+      throw new Error('無法解析智譜回應');
+    } catch (error) {
+      console.error('智譜API調用失敗:', error.message);
+      throw new Error(`智譜分析失敗: ${error.message}`);
+    }
+  }
+
   // 指標記錄
   recordMetrics(service, latencyMs, isError = false) {
     this.metrics.totalAnalyses += 1;
@@ -234,6 +307,8 @@ class AIService {
         openai: !!this.openaiApiKey,
         anthropic: !!this.anthropicApiKey,
         gemini: !!this.geminiApiKey,
+        kimi: !!this.kimiApiKey,
+        zhipu: !!this.zhipuApiKey,
         googleVision: !!this.visionApiKey
       }
     };
@@ -377,13 +452,16 @@ class AIService {
 
   // 自動降級分析
   async analyzeWithFallback(imageBase64) {
-    const services = ['gemini', 'openai', 'kimi', 'anthropic', 'google-vision'];
+    const services = ['zhipu', 'gemini', 'openai', 'kimi', 'anthropic', 'google-vision'];
     
     for (const service of services) {
       try {
         console.log(`嘗試使用 ${service} 進行分析...`);
         
         switch (service) {
+          case 'zhipu':
+            if (this.zhipuApiKey) return await this.analyzeWithZhipu(imageBase64);
+            break;
           case 'openai':
             if (this.openaiApiKey) return await this.analyzeWithOpenAI(imageBase64);
             break;
