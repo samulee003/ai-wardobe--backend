@@ -56,6 +56,16 @@ router.post('/', auth, async (req, res) => {
           }
           result = await aiService.analyzeWithKimi(testImage);
           break;
+        case 'zhipu':
+          if (!process.env.ZHIPU_API_KEY) {
+            return res.status(400).json({
+              message: 'ZHIPU API Key 未設定',
+              provider,
+              available: false
+            });
+          }
+          result = await aiService.analyzeWithZhipu(testImage);
+          break;
           
         case 'fallback':
           result = await aiService.getFallbackAnalysis();
@@ -67,8 +77,8 @@ router.post('/', auth, async (req, res) => {
       
       const latency = Date.now() - startTime;
       
-      // 記錄成功的測試
-      aiService.recordMetrics(provider, latency, true);
+      // 記錄成功的測試（isError=false）
+      aiService.recordMetrics(provider, latency, false);
       
       res.json({
         success: true,
@@ -85,8 +95,8 @@ router.post('/', auth, async (req, res) => {
     } catch (error) {
       const latency = Date.now() - startTime;
       
-      // 記錄失敗的測試
-      aiService.recordMetrics(provider, latency, false);
+      // 記錄失敗的測試（isError=true）
+      aiService.recordMetrics(provider, latency, true);
       
       console.error(`AI 供應商 ${provider} 測試失敗:`, error);
       
@@ -135,6 +145,12 @@ router.get('/status', auth, async (req, res) => {
             totalAnalyses: metrics.byService.kimi?.count || 0,
             avgLatency: metrics.byService.kimi?.avgLatency || 0,
             lastUsed: metrics.byService.kimi?.lastUsed || null
+          },
+          zhipu: {
+            available: !!process.env.ZHIPU_API_KEY,
+            totalAnalyses: metrics.byService.zhipu?.count || 0,
+            avgLatency: metrics.byService.zhipu?.avgLatency || 0,
+            lastUsed: metrics.byService.zhipu?.lastUsed || null
           },
         fallback: {
           available: true,
