@@ -5,6 +5,22 @@ const auth = require('../middleware/auth');
 
 const router = express.Router();
 
+// 整套穿搭分析（照片 → 多物件 + 整體風格）
+router.post('/analyze', auth, async (req, res) => {
+  try {
+    const { imageBase64 } = req.body || {};
+    if (!imageBase64 || typeof imageBase64 !== 'string') {
+      return res.status(400).json({ message: '缺少 imageBase64（不含 data: 前綴）' });
+    }
+
+    const analysis = await aiService.analyzeOutfit(imageBase64);
+    return res.json({ message: '分析成功', analysis });
+  } catch (error) {
+    console.error('Outfit 分析端點錯誤:', error);
+    return res.status(500).json({ message: '分析失敗', error: error.message });
+  }
+});
+
 // 獲取穿搭推薦
 router.get('/recommendations', auth, async (req, res) => {
   try {

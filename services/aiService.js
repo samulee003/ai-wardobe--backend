@@ -127,6 +127,214 @@ class AIService {
     }
   }
 
+  // 整套穿搭風格分析（多物件 + 整體風格）
+  async analyzeOutfit(imageBase64) {
+    const startAt = Date.now();
+    try {
+      let analysis;
+
+      switch (this.preferredAI) {
+        case 'openai':
+          analysis = await this.analyzeOutfitWithOpenAI(imageBase64);
+          break;
+        case 'gemini':
+          analysis = await this.analyzeOutfitWithGemini(imageBase64);
+          break;
+        case 'zhipu':
+          analysis = await this.analyzeOutfitWithZhipu(imageBase64);
+          break;
+        case 'anthropic':
+          // 可選：後續補上 Claude 視覺實作
+          analysis = await this.analyzeOutfitWithFallback(imageBase64);
+          break;
+        case 'kimi':
+          // 可選：後續補上 Kimi 視覺實作
+          analysis = await this.analyzeOutfitWithFallback(imageBase64);
+          break;
+        default:
+          analysis = await this.analyzeOutfitWithFallback(imageBase64);
+      }
+
+      const latencyMs = Date.now() - startAt;
+      const result = {
+        outfitStyle: analysis.outfitStyle,
+        styleConfidence: analysis.styleConfidence,
+        items: analysis.items || [],
+        globalColors: analysis.globalColors || [],
+        season: analysis.season || [],
+        occasion: analysis.occasion || '日常',
+        suggestions: analysis.suggestions || [],
+        aiService: analysis.aiService || this.preferredAI,
+        latencyMs
+      };
+
+      this.recordMetrics(result.aiService, latencyMs);
+      return result;
+    } catch (error) {
+      const latencyMs = Date.now() - startAt;
+      console.error('Outfit 分析錯誤:', error.message || error);
+      const fallback = this.getFallbackOutfitAnalysis();
+      this.recordMetrics('fallback', latencyMs, true);
+      return { ...fallback, aiService: 'fallback', latencyMs };
+    }
+  }
+
+  buildOutfitPrompt() {
+    return (
+      '你是一位專業時尚顧問。請分析這張「整套穿搭」的照片，輸出 JSON，嚴格符合下列欄位與格式（只輸出 JSON）：\n\n' +
+      'Schema:\n' +
+      '[outfitStyle, styleConfidence, items[role, category, subCategory, colors[], material, patterns[], confidence], globalColors[], season[], occasion, suggestions[]]\n\n' +
+      '要求：\n' +
+      '- 準確識別圖中包含的每件衣物（至少：上衣/下裝/外套/鞋子/配件）。\n' +
+      '- 對每件衣物給出 category、subCategory、顏色、材質/圖案（若可判斷）、confidence。\n' +
+      '- 綜合判斷整體 outfitStyle 與 styleConfidence，並推斷 season 與 occasion。\n' +
+      '- 如有不確定，保持 JSON 結構完整，未知以空陣列或省略可選欄位。\n' +
+      '- 僅輸出 JSON，不要任何解釋文字。'
+    );
+  }
+
+  // OpenAI：Outfit 分析
+  async analyzeOutfitWithOpenAI(imageBase64) {
+    const prompt = this.buildOutfitPrompt();
+
+    const makeRequest = async () => axios.post(this.openaiUrl, {
+      model: 'gpt-4-vision-preview',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            {
+              type: 'image_url',
+              image_url: { url: `data:image/jpeg;base64,${imageBase64}`, detail: 'high' }
+            }
+          ]
+        }
+      ],
+      max_tokens: 1200,
+      temperature: 0.2
+    }, {
+      headers: {
+        Authorization: `Bearer ${this.openaiApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
+
+    let response;
+    try {
+      response = await makeRequest();
+    } catch (err) {
+      const status = err.response?.status;
+      if (err.code === 'ECONNABORTED' || (status && status >= 500)) {
+        await new Promise(r => setTimeout(r, 1000));
+        response = await makeRequest();
+      } else {
+        throw err;
+      }
+    }
+
+    const content = response.data?.choices?.[0]?.message?.content || '';
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const analysis = JSON.parse(jsonMatch[0]);
+      return { ...analysis, aiService: 'openai' };
+    }
+    throw new Error('無法解析 OpenAI Outfit 回應');
+  }
+
+  // Gemini：Outfit 分析
+  async analyzeOutfitWithGemini(imageBase64) {
+    const prompt = this.buildOutfitPrompt();
+    const response = await axios.post(this.geminiUrl, {
+      contents: [{
+        parts: [
+          { text: prompt },
+          { inline_data: { mime_type: 'image/jpeg', data: imageBase64 } }
+        ]
+      }]
+    }, { headers: { 'Content-Type': 'application/json' } });
+
+    const content = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const analysis = JSON.parse(jsonMatch[0]);
+      return { ...analysis, aiService: 'gemini' };
+    }
+    throw new Error('無法解析 Gemini Outfit 回應');
+  }
+
+  // 智譜 GLM-4.5V：Outfit 分析（需要可訪問 URL）
+  async analyzeOutfitWithZhipu(imageBase64) {
+    if (!this.zhipuApiKey) throw new Error('未配置智譜API金鑰');
+    const prompt = this.buildOutfitPrompt();
+    const imageUrl = await this.base64ToPublicUrl(imageBase64, 'jpg');
+
+    const response = await axios.post(this.zhipuUrl, {
+      model: 'glm-4.5v',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: imageUrl } },
+          { type: 'text', text: prompt }
+        ]
+      }],
+      thinking: { type: 'disabled' },
+      stream: false
+    }, {
+      headers: {
+        Authorization: `Bearer ${this.zhipuApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
+
+    const content = response.data?.choices?.[0]?.message?.content || '';
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const analysis = JSON.parse(jsonMatch[0]);
+      return { ...analysis, aiService: 'zhipu' };
+    }
+    throw new Error('無法解析 智譜 Outfit 回應');
+  }
+
+  // Outfit 自動降級分析
+  async analyzeOutfitWithFallback(imageBase64) {
+    const services = ['zhipu', 'gemini', 'openai'];
+    for (const service of services) {
+      try {
+        switch (service) {
+          case 'zhipu':
+            if (this.zhipuApiKey) return await this.analyzeOutfitWithZhipu(imageBase64);
+            break;
+          case 'gemini':
+            if (this.geminiApiKey) return await this.analyzeOutfitWithGemini(imageBase64);
+            break;
+          case 'openai':
+            if (this.openaiApiKey) return await this.analyzeOutfitWithOpenAI(imageBase64);
+            break;
+        }
+      } catch (e) {
+        console.warn(`${service} Outfit 分析失敗:`, e.message);
+        continue;
+      }
+    }
+    // 本地極簡回退
+    return this.getFallbackOutfitAnalysis();
+  }
+
+  getFallbackOutfitAnalysis() {
+    return {
+      outfitStyle: '簡約',
+      styleConfidence: 0.3,
+      items: [],
+      globalColors: ['黑色', '白色'],
+      season: ['春', '秋'],
+      occasion: '日常',
+      suggestions: ['請在光線充足下重試，或上傳更清晰的全身照']
+    };
+  }
+
   // Moonshot Kimi Vision 分析（OpenAI 相容接口）
   async analyzeWithKimi(imageBase64) {
     const model = process.env.KIMI_VISION_MODEL || 'moonshot-v1-8k-vision-preview';
